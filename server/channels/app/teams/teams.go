@@ -7,6 +7,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/shared/i18n"
 	"github.com/mattermost/mattermost/server/public/shared/request"
+	"sync"
 )
 
 func (ts *TeamService) CreateTeam(rctx request.CTX, team *model.Team) (*model.Team, error) {
@@ -49,25 +50,55 @@ func (ts *TeamService) createDefaultChannels(rctx request.CTX, teamID string) ([
 	}
 	channels := []*model.Channel{}
 	defaultChannelNames := ts.DefaultChannelNames()
+
+	var (
+		wg          sync.WaitGroup
+		errorChan   = make(chan error)
+		channelChan = make(chan *model.Channel)
+	)
+
 	for _, name := range defaultChannelNames {
-		var displayName string
-		if displayNameValue, ok := displayNames[name]; ok {
-			displayName = i18n.TDefault(displayNameValue, name)
-		} else {
-			// If the default channel is experimental (from config.json)
-			// we don't have to translate
-			displayName = name
-		}
-		channel := &model.Channel{DisplayName: displayName, Name: name, Type: model.ChannelTypeOpen, TeamId: teamID}
-		// We should use the channel service here (coming soon). Ideally, we should just emit an event
-		// and let the subscribers do the job, in this case it would be the channels service.
-		// Currently we are adding services to the server and because of that we are using
-		// the channel store here. This should be replaced in the future.
-		if _, err := ts.channelStore.Save(rctx, channel, *ts.config().TeamSettings.MaxChannelsPerTeam); err != nil {
-			return nil, err
-		}
-		channels = append(channels, channel)
+		wg.Add(1)
+		go func(e chan<- error, r chan<- *model.Channel) {
+			defer wg.Done()
+
+			var displayName string
+			if displayNameValue, ok := displayNames[name]; ok {
+				displayName = i18n.TDefault(displayNameValue, name)
+			} else {
+				// If the default channel is experimental (from config.json)
+				// we don't have to translate
+				displayName = name
+			}
+			channel := &model.Channel{DisplayName: displayName, Name: name, Type: model.ChannelTypeOpen, TeamId: teamID}
+			// We should use the channel service here (coming soon). Ideally, we should just emit an event
+			// and let the subscribers do the job, in this case it would be the channels service.
+			// Currently we are adding services to the server and because of that we are using
+			// the channel store here. This should be replaced in the future.
+			if _, err := ts.channelStore.Save(rctx, channel, *ts.config().TeamSettings.MaxChannelsPerTeam); err != nil {
+				e <- err
+				return
+			}
+
+			r <- channel
+		}(errorChan, channelChan)
 	}
+
+	go func() {
+		wg.Wait()
+		close(errorChan)
+		close(channelChan)
+	}()
+
+	for len(channels) < len(defaultChannelNames) {
+		select {
+		case err := <-errorChan:
+			return nil, err
+		case channel := <-channelChan:
+			channels = append(channels, channel)
+		}
+	}
+
 	return channels, nil
 }
 
