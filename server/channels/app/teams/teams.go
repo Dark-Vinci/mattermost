@@ -4,10 +4,11 @@
 package teams
 
 import (
+	"sync"
+
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/shared/i18n"
 	"github.com/mattermost/mattermost/server/public/shared/request"
-	"sync"
 )
 
 func (ts *TeamService) CreateTeam(rctx request.CTX, team *model.Team) (*model.Team, error) {
